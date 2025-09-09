@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Local AI Email Replier</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <div class="header-row">
+      <img src="JATAS AI logo.png" alt="JATAS AI" class="logo" />
+      <h1>Reply Draft</h1>
+    </div>
+
+    <label>Style/Tone (optional)</label>
+    <input id="style" placeholder="concise, polite, <=120 words" />
+
+    <label>Source email</label>
+    <textarea id="email" rows="8" placeholder="Paste email or open Gmail/Outlook tab…"></textarea>
+
+    <button id="gen">Generate Draft</button>
+
+    <label>Draft (edit before sending)</label>
+    <textarea id="draft" rows="10"></textarea>
+
+    <div class="row">
+      <button id="copy">Copy</button>
+      <button id="send">Send (Gmail)</button>
+    </div>
+
+    <p class="note">All AI runs locally on your device. Nothing is sent to cloud.</p>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

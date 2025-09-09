@@ -1,0 +1,12 @@
+in vs.code terminal:
+ 
+PS D:\Demo_Jatas> cd bridge
+PS D:\Demo_Jatas\bridge> .\.venv\Scripts\Activate.ps1
+(.venv) PS D:\Demo_Jatas\bridge> python .\bridge.py 
+server is started 
+
+in cmd for (ollama): for ollama side starting the server
+converted into d drive then 
+1. ollama
+2. start ollama
+3. ollama serve

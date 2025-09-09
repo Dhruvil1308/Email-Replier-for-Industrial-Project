@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Local AI Email Replier",
+  "version": "1.0.0",
+  "description": "Drafts privacy-first email replies with a local LLM. Human-in-the-loop—never auto-sends.",
+  "permissions": ["storage", "activeTab", "scripting", "identity"],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "https://outlook.office.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "oauth2": {
+    "client_id": "414637726901-4511v6jodgo2qs6flf3bj57br81veg6i.apps.googleusercontent.com",
+    "scopes": ["https://www.googleapis.com/auth/gmail.send"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*", "https://outlook.office.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": { "default_popup": "popup.html" },
+  "icons": {
+    "16": "JATAS AI logo.png",
+    "48": "JATAS AI logo.png",
+    "128": "JATAS AI logo.png"
+  }
+}
