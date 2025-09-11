@@ -17,7 +17,8 @@ Now fully integrated with **Google OAuth & Gmail API**, the extension not only d
 ## 🖼️ Extension UI Preview
 
 Here’s how the extension looks inside Gmail:  
-<img width="486" height="749" alt="image" src="https://github.com/user-attachments/assets/3cc3156f-a33e-4625-8ccc-d9db8d074f1a" />
+<img width="418" height="752" alt="image" src="https://github.com/user-attachments/assets/2267445a-a87a-489f-9e1a-a115df400b8c" />
+
 
 ---
 
