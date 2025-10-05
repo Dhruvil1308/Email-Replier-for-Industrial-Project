@@ -1,15 +1,75 @@
 // Try multiple possible Ollama endpoints
 const OLLAMA_PORTS = [11434, 11500];
+const BRIDGE_PORT = 5000;
 
-// OAuth config (provided by user)
-const CLIENT_ID = "414637726901-4511v6jodgo2qs6flf3bj57br81veg6i.apps.googleusercontent.com";
-const EXTENSION_ID = "cpflhjagocchmjpngmpdnaeekbinmjem";
-const REDIRECT_URI = `https://${EXTENSION_ID}.chromiumapp.org/`;
+// Check model availability periodically and notify any open popup
+async function checkModelAvailability() {
+  let modelAvailable = false;
+  
+  // Try Ollama ports
+  for (const port of OLLAMA_PORTS) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      
+      const response = await fetch(`http://localhost:${port}/api/version`, {
+        method: "GET",
+        signal: controller.signal
+      }).catch(() => null);
+      
+      clearTimeout(timeoutId);
+      
+      if (response && response.ok) {
+        modelAvailable = true;
+        break;
+      }
+    } catch (e) {
+      console.debug(`Ollama not available on port ${port}:`, e);
+    }
+  }
+  
+  // If Ollama isn't available, try the bridge
+  if (!modelAvailable) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      
+      const response = await fetch(`http://localhost:${BRIDGE_PORT}/`, {
+        method: "GET",
+        signal: controller.signal
+      }).catch(() => null);
+      
+      clearTimeout(timeoutId);
+      
+      if (response && response.ok) {
+        modelAvailable = true;
+      }
+    } catch (e) {
+      console.debug(`Bridge not available on port ${BRIDGE_PORT}:`, e);
+    }
+  }
+  
+  // Broadcast status to any open popup
+  chrome.runtime.sendMessage({ 
+    type: 'model_status_update',
+    available: modelAvailable 
+  }).catch(() => {}); // Ignore errors if popup isn't open
+  
+  return modelAvailable;
+}
+
+// Only check model availability, not authentication
+checkModelAvailability();
+setInterval(checkModelAvailability, 15000); // Check every 15 seconds
+
+// OAuth config - using manifest.json oauth2 section
+// No need to define client_id here as it's already in manifest.json
 const SCOPES = ["https://www.googleapis.com/auth/gmail.send"];
 
 function getAuthToken(interactive = true) {
   return new Promise((resolve, reject) => {
     try {
+      // The client_id is picked up from manifest.json's oauth2 section
       chrome.identity.getAuthToken({ interactive }, (token) => {
         if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
         resolve(token);
@@ -23,64 +83,152 @@ function getAuthToken(interactive = true) {
 // --- PKCE + launchWebAuthFlow helpers for manual OAuth (force account chooser) ---
 // (PKCE helpers removed; using chrome.identity.getAuthToken flow)
 
-async function requestDraft(emailBody, style = "concise, polite, <=120 words") {
+async function requestDraft(emailBody, style = "polite, professional, concise", creativity = "balanced") {
   let lastError;
+  
+  // Check model availability first
+  const modelAvailable = await checkModelAvailability();
+  if (!modelAvailable) {
+    chrome.runtime.sendMessage({
+      type: "draft_error",
+      error: "Local model is not available. Please start Ollama or the bridge server."
+    });
+    return;
+  }
 
   // Helper to stream and forward partials/final from a ReadableStream that yields JSONL lines
   async function streamJsonl(res) {
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     if (!res.body) throw new Error("No stream body");
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let full = "";
+    
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      for (const line of buffer.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const payload = JSON.parse(line);
-          const delta = payload?.message?.content || "";
-          if (delta) {
-            full += delta;
-            chrome.runtime.sendMessage({ type: "partial", content: delta });
+        for (const line of buffer.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const payload = JSON.parse(line);
+            const delta = payload?.message?.content || "";
+            if (delta) {
+              full += delta;
+              chrome.runtime.sendMessage({ type: "partial", content: delta });
+            }
+            if (payload?.done) {
+              chrome.runtime.sendMessage({ type: "final", content: full });
+              return;
+            }
+          } catch (e) {
+            // incomplete JSON chunk; continue accumulating
           }
-          if (payload?.done) {
-            chrome.runtime.sendMessage({ type: "final", content: full });
-            return;
-          }
-        } catch (e) {
-          // incomplete JSON chunk; continue accumulating
         }
+        buffer = "";
       }
-      buffer = "";
+      // stream ended without explicit done flag
+      chrome.runtime.sendMessage({ type: "final", content: full });
+    } catch (error) {
+      console.error("Error streaming response:", error);
+      throw error;
     }
-    // stream ended without explicit done flag
-    chrome.runtime.sendMessage({ type: "final", content: full });
   }
+
+  // Utility: map creativity -> sampling options
+  const sampling = (() => {
+    switch ((creativity || 'balanced').toLowerCase()) {
+      case 'precise':
+        return { temperature: 0.3, top_p: 0.9, repeat_penalty: 1.15 };
+      case 'creative':
+        return { temperature: 0.9, top_p: 0.97, repeat_penalty: 1.05 };
+      default:
+        return { temperature: 0.6, top_p: 0.95, repeat_penalty: 1.1 };
+    }
+  })();
+
+  // Clean up any extra content the model might add
+  function cleanReply(text) {
+    if (!text) return '';
+    let t = text;
+    // Remove common prefixes
+    t = t.replace(/^\s*(Draft:|Response:|Reply:|Email:|Subject:[^\n]*\n)/gi, '');
+    // Remove code fences if any
+    t = t.replace(/^```[\s\S]*?```\s*$/gm, '').trim();
+    // Collapse 3+ newlines to two
+    t = t.replace(/\n{3,}/g, '\n\n').trim();
+    return t;
+  }
+
+  // Craft a concise, opinionated system prompt
+  const systemPrompt = `You are a professional email assistant.
+- Reply in the SAME language as the original message.
+- Output only the reply body — no analysis, no meta notes, no quoted original.
+- Keep it concise (<=120 words), clear, and action-oriented.
+- Adopt this style: ${style}.
+- If a sender display name is provided, use it exactly in the salutation (e.g., "Hi {name}" or "Dear {name}").
+- If no clear name, use a neutral salutation like "Hello".
+- End with a short appropriate sign-off (e.g., "Best regards," or "Thanks,").`;
 
   // Try Ollama ports first
   for (const port of OLLAMA_PORTS) {
     try {
+      console.log(`Trying Ollama on port ${port}...`);
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      
       const res = await fetch(`http://localhost:${port}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           model: "llama3.2",
           messages: [
-            { role: "system", content: `You are a professional email assistant. Follow these rules:\n- Always start with a short greeting addressing the sender by their display name if provided (e.g. "Hi Ronak,").\n- Keep the response in the same language as the original message.\n- Keep the reply ${style}.\n- Ask a polite clarifying question when helpful.\n- End with a sign-off: "Best regards, [Your Name]" and do not include any extra commentary or notes about being an AI.` },
+            { role: "system", content: systemPrompt },
             { role: "user", content: emailBody }
           ],
-          stream: true
+          stream: true,
+          options: {
+            temperature: sampling.temperature,
+            top_p: sampling.top_p,
+            repeat_penalty: sampling.repeat_penalty
+          }
         })
       });
+      
+      clearTimeout(timeoutId);
 
-      await streamJsonl(res);
+      // stream and then clean at the end by intercepting the final message
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      if (!res.body) throw new Error("No stream body");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let full = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        for (const line of buffer.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const payload = JSON.parse(line);
+            const delta = payload?.message?.content || "";
+            if (delta) {
+              full += delta;
+              chrome.runtime.sendMessage({ type: "partial", content: delta });
+            }
+          } catch (_) { /* ignore */ }
+        }
+        buffer = "";
+      }
+      chrome.runtime.sendMessage({ type: "final", content: cleanReply(full) });
       return; // success
     } catch (err) {
       lastError = err;
@@ -89,15 +237,31 @@ async function requestDraft(emailBody, style = "concise, polite, <=120 words") {
     }
   }
 
-  // Fallback: try local bridge at :5000 (if present). Bridge expected to stream SSE or plain text lines.
+  // Fallback: try local bridge at :5000 (if present)
   try {
-    const res = await fetch("http://localhost:5000/draft", {
+    console.log(`Trying bridge server on port ${BRIDGE_PORT}...`);
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+    
+    const res = await fetch(`http://localhost:${BRIDGE_PORT}/draft`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: emailBody, style })
+      signal: controller.signal,
+      body: JSON.stringify({ 
+        email: emailBody, 
+        style,
+        creativity
+      })
     });
+    
+    clearTimeout(timeoutId);
 
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`HTTP ${res.status}: ${errorText}`);
+    }
+    
     if (!res.body) {
       // try to read as text
       const text = await res.text();
@@ -105,7 +269,7 @@ async function requestDraft(emailBody, style = "concise, polite, <=120 words") {
       return;
     }
 
-    // Stream plain text (assume chunks are partials)
+    // Stream plain text (assume chunks are partials) and clean at the end
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let full = "";
@@ -116,7 +280,7 @@ async function requestDraft(emailBody, style = "concise, polite, <=120 words") {
       full += chunk;
       chrome.runtime.sendMessage({ type: "partial", content: chunk });
     }
-    chrome.runtime.sendMessage({ type: "final", content: full });
+    chrome.runtime.sendMessage({ type: "final", content: cleanReply(full) });
     return;
   } catch (err) {
     lastError = err;
@@ -135,13 +299,14 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "generateDraft") {
     // prefer senderName if provided to craft salutation
     const style = msg.style || "concise, polite, <=120 words";
+    const creativity = msg.creativity || 'balanced';
     const senderName = msg.senderName || '';
     // augment emailBody with a system instruction prefix including sender name hint
     let bodyForModel = msg.emailBody;
     if (senderName) {
       bodyForModel = `SenderDisplayName: ${senderName}\n\n` + bodyForModel;
     }
-    requestDraft(bodyForModel, style);
+    requestDraft(bodyForModel, style, creativity);
   }
   // allow popup to clear any cached token so the account chooser appears next time
   if (msg.type === 'clearCachedToken') {
@@ -172,24 +337,23 @@ chrome.runtime.onMessage.addListener((msg) => {
         // msg should contain to, subject, body
         const { to, subject, body } = msg;
 
-        // Try to get a cached token silently. If present, remove it to force account chooser.
+        // Always clear any cached token first to ensure account chooser appears
         let cachedToken = null;
         try {
-          cachedToken = await getAuthToken(false);
-        } catch (e) {
-          // no cached token
-        }
-
-        if (cachedToken) {
-          try {
+          cachedToken = await getAuthToken(false); // Check for existing token without UI
+          
+          if (cachedToken) {
+            // If we have a token, remove it to force the account chooser
             await new Promise((res) => chrome.identity.removeCachedAuthToken({ token: cachedToken }, res));
-          } catch (e) {
-            // ignore removal errors
           }
+        } catch (e) {
+          // No cached token or error getting it - that's fine, we'll get a new one
+          console.log('No cached token available:', e?.message || 'unknown error');
         }
 
         // Now request interactive token which will show the browser account chooser
-        const token = await getAuthToken(true);
+        // The interactive:true flag forces the UI to appear
+        const token = await getAuthToken(true); 
 
         // Build raw MIME message and send via Gmail API
         function base64UrlEncode(str) {
@@ -213,11 +377,28 @@ chrome.runtime.onMessage.addListener((msg) => {
         });
 
         if (!res.ok) {
-          const text = await res.text();
-          chrome.runtime.sendMessage({ type: 'gmail_send_error', error: `Send failed: ${res.status} ${text}` });
+          let errorText = await res.text();
+          
+          try {
+            // Try to parse error as JSON to extract more detailed message
+            const errorJson = JSON.parse(errorText);
+            if (errorJson.error && errorJson.error.message) {
+              errorText = errorJson.error.message;
+            }
+          } catch (e) {
+            // Keep original error text if parsing fails
+          }
+          
+          console.error(`Gmail API error: ${res.status}`, errorText);
+          chrome.runtime.sendMessage({ 
+            type: 'gmail_send_error', 
+            error: `Send failed: ${res.status} - ${errorText}` 
+          });
           return;
         }
 
+        // Success! Send confirmation to popup
+        console.log('Email sent successfully');
         chrome.runtime.sendMessage({ type: 'gmail_send_success' });
       } catch (e) {
         chrome.runtime.sendMessage({ type: 'gmail_send_error', error: (e && e.message) || String(e) });
