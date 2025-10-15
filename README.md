@@ -1,4 +1,6 @@
 https://youtu.be/7ons5SrfyWY?si=p2JnesfQ_yBnmhzk
+https://search.google.com/search-console/welcome
+https://www.researchgate.net/publication/392266421_Asthra_MailGuard_A_Privacy-First_Hybrid_AI_Email_Assistant_Using_ML_and_Local_LLMs?utm_source=chatgpt.com
 # 📧 JATAS AI Email Replier
 
 A friendly Chrome extension that helps you reply to emails quickly without sending any data to the cloud. Drafts are generated locally with the **Llama 3.2** language model (running through [Ollama](https://ollama.com)) and can be sent straight from Gmail once you approve access.
