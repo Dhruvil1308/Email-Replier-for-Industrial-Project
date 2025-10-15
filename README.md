@@ -1,3 +1,4 @@
+https://youtu.be/7ons5SrfyWY?si=p2JnesfQ_yBnmhzk
 # 📧 JATAS AI Email Replier
 
 A friendly Chrome extension that helps you reply to emails quickly without sending any data to the cloud. Drafts are generated locally with the **Llama 3.2** language model (running through [Ollama](https://ollama.com)) and can be sent straight from Gmail once you approve access.
